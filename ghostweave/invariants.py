@@ -31,7 +31,7 @@ def relabel(body):
 
 
 # ------------------------------------------------------------------ concrete runs
-def run_woven(body, locals_, inputs_list, fuel=20000, externs=None):
+def run_woven(body, locals_, inputs_list, fuel=20000, externs=None, chooser=None):
     """Run woven body on each input env; returns (samples by label, n_ok, failures)."""
     samples = {}
     ok = 0
@@ -45,6 +45,7 @@ def run_woven(body, locals_, inputs_list, fuel=20000, externs=None):
     for inp in inputs_list:
         env = dict(inp)
         it = Interp(fuel, externs=externs, probe=probe)
+        it.chooser = chooser
         try:
             it.run(body, env)
             ok += 1
@@ -277,8 +278,11 @@ def antecedents_for(loop, body):
     for n in sorted(names):
         if n.startswith('g_it'):
             ants.append(Bin('>=', Var(n, INT), Const(1, INT), BOOL))
-    ants = ants[:6]
-    ants = ants + [mk_not(a) for a in ants]
+            # parity of the schedule counter: the ghost-side substitute for unrolling P1
+            for j in (0, 1):
+                ants.append(Bin('==', Bin('%', Var(n, INT), Const(2, INT), INT), Const(j, INT), BOOL))
+    ants = ants[:8]
+    ants = ants + [mk_not(a) for a in ants if not (isinstance(a, Bin) and a.op == '==')]
     out, seen = [], set()
     for a in ants:
         k = D.ex(a)
@@ -330,18 +334,34 @@ def score_candidates(cands, changed=None):
 
 
 # ------------------------------------------------------------------ Houdini over Dafny
-def houdini(woven, externs, cand_by_label, max_rounds=14, timeout=180, vc_limit=60, log=None, keep=None):
+def is_cheap(e):
+    """first Houdini stage: equalities without products, boolean facts, simple bounds"""
+    if isinstance(e, Bin) and e.op == '==':
+        return '*' not in D.ex(e)
+    if isinstance(e, (Var, Un)):
+        return True
+    if isinstance(e, Bin) and e.op == '>=' and isinstance(e.r, Const):
+        return True
+    return False
+
+
+def houdini(woven, externs, cand_by_label, max_rounds=14, timeout=180, vc_limit=60, log=None, keep=None,
+            deadline=None):
     """woven: method dict (see dafny.emit_method) whose body loops carry labels.
     Iteratively drops invariants Dafny reports as failing.  Returns (DafnyResult, final text, rounds)."""
+    import time as _t
     cur = {k: list(v) for k, v in cand_by_label.items()}
-    res = None
+    res = D.DafnyResult(False, [], 'deadline', timeout=True)
     text = ''
     for rnd in range(max_rounds):
+        if deadline is not None and _t.time() > deadline:
+            break
         w = copy.deepcopy(woven)
         for lp in all_loops(w['body']):
             lp.invs = list(cur.get(lp.label, []))
         text, em = D.emit_method(w, externs)
-        res = D.run_dafny(text, timeout=timeout, vc_limit=vc_limit, keep=keep)
+        tmo = timeout if deadline is None else max(20, min(timeout, deadline - _t.time() + 20))
+        res = D.run_dafny(text, timeout=tmo, vc_limit=vc_limit, keep=keep)
         if log is not None:
             log.append((rnd, len(res.errors), [m for _, m in res.errors][:6], res.timeout))
         if res.ok:

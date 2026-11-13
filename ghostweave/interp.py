@@ -51,6 +51,19 @@ EXTERN_IMPL = {
 }
 
 
+def uninterpreted(f, args, ty):
+    """Deterministic pseudo-random model of an uninterpreted function (used only for testing and
+    trace collection; proofs treat the function as uninterpreted)."""
+    import hashlib
+    h = int(hashlib.md5(repr((f, tuple(args))).encode()).hexdigest()[:8], 16)
+    if ty == REAL:
+        return (h % 2001 - 1000) / 8.0
+    if ty == BOOL:
+        return h % 2 == 0
+    # small range, biased towards 0 so that loops guarded by  p(x) != 0  terminate
+    return 0 if h % 4 == 0 else h % 200 - 50
+
+
 class Interp:
     def __init__(self, fuel=20000, externs=None, probe=None):
         self.fuel = fuel
@@ -58,6 +71,7 @@ class Interp:
         if externs:
             self.ext.update(externs)
         self.probe = probe  # callback(label, env)
+        self.chooser = None  # callback(fn, args, env) for forall-side nondeterministic choices
 
     def ev(self, e, env):
         if isinstance(e, Const):
@@ -116,7 +130,9 @@ class Interp:
         if isinstance(e, Call):
             args = [self.ev(a, env) for a in e.args]
             if e.f not in self.ext:
-                raise Undefined('extern ' + e.f)
+                if e.f.startswith('rec_'):
+                    raise Undefined('extern ' + e.f)
+                return uninterpreted(e.f, args, e.ty)
             r = self.ext[e.f](*args)
             if e.ty == REAL:
                 r = float(r)
@@ -148,7 +164,7 @@ class Interp:
         if isinstance(e, SeqLit):
             return default_seq(e.n, e.elem)
         if isinstance(e, Raw):
-            return True
+            return True if e.py is None else e.py(env)
         raise TypeError(e)
 
     def run(self, ss, env):
@@ -185,6 +201,10 @@ class Interp:
         elif isinstance(s, Probe):
             if self.probe:
                 self.probe(s.label, env)
+        elif isinstance(s, Choose):
+            if self.chooser is None:
+                raise Undefined('choice')
+            env[s.name] = self.chooser(s.fn, [self.ev(a, env) for a in s.args], env)
         else:
             raise TypeError(s)
 

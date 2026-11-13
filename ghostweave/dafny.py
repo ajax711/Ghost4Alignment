@@ -103,6 +103,7 @@ class Emitter:
         self.lines = []
         self.inv_lines = {}   # line number (1-based) -> (loop id, invariant index)
         self.assert_lines = {}
+        self.choice_specs = {}
 
     def emit(self, s, ind):
         p = '  ' * ind
@@ -139,6 +140,10 @@ class Emitter:
             self.lines.append(f'{p}assume {{:axiom}} {ex(s.e)};')
         elif isinstance(s, Probe):
             pass
+        elif isinstance(s, Choose):
+            spec = self.choice_specs.get(s.fn)
+            pred = spec(s.name, [ex(a) for a in s.args]) if spec else 'true'
+            self.lines.append(f'{p}{s.name} :| {pred};')
         else:
             raise TypeError(s)
 
@@ -152,6 +157,7 @@ def emit_method(woven, externs, header_comment=''):
          body: list[Stmt]
     Returns (text, emitter)."""
     em = Emitter()
+    em.choice_specs = woven.get('choice_specs', {})
     CALL_ALIAS.clear()
     CALL_ALIAS.update(woven.get('call_alias', {}))
     em.lines += [l for l in PRELUDE.strip('\n').split('\n')]
@@ -168,6 +174,8 @@ def emit_method(woven, externs, header_comment=''):
             em.lines.append('// ' + l)
     ps = ', '.join(('ghost ' if g else '') + f'{n}: {dty(t)}' for n, t, g in woven['params'])
     os_ = ', '.join(('ghost ' if g else '') + f'{n}: {dty(t)}' for n, t, g in woven['outs'])
+    for extra in woven.get('extra_decls', []):
+        em.lines.append(extra)
     em.lines.append(f'method Woven({ps})' + (f' returns ({os_})' if os_ else ''))
     for r in woven['requires']:
         em.lines.append(f'  requires {ex(r)}')
@@ -205,7 +213,7 @@ def run_dafny(text, timeout=120, vc_limit=60, workdir=None, keep=None):
     if keep:
         shutil.copy(path, keep)
     try:
-        cp = subprocess.run([DAFNY, 'verify', '--allow-warnings', '--cores', '1', '--isolate-assertions',
+        cp = subprocess.run([DAFNY, 'verify', '--allow-warnings', '--cores', '1', '--isolate-assertions', '--error-limit', '0',
                              f'--verification-time-limit', str(vc_limit), path],
                             capture_output=True, text=True, timeout=timeout)
         out = cp.stdout + cp.stderr

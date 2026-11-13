@@ -89,7 +89,8 @@ def work(args):
         real_read = any(f == 'read' and rt == 'real' for f, (_, rt) in p1.externs.items())
         I.EXTERN_IMPL['read'] = lambda a, i: heap.read(a, i, real_read)
         I.EXTERN_IMPL['store'] = lambda a, i, x: heap.store(a, i, x, real_read)
-        prob = Problem(p1, p2, pre=[Raw(pre_txt)], post_obs=[], post_raw=Raw(post_txt))
+        from ghostweave.forall_exists import py_pred
+        prob = Problem(p1, p2, pre=[Raw(pre_txt)], post_obs=[], post_raw=Raw(post_txt, py=py_pred(post_txt)))
         # sampler: honour the simple equalities left.x == right.y of the precondition
         eqs = re.findall(r'left\.(\w+)\s*==\s*right\.(\w+)', hd['pre'] or '')
         bounds = re.findall(r'(-?\d+)\s*<=?\s*left\.(\w+)', hd['pre'] or '')

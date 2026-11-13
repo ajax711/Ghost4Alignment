@@ -110,7 +110,8 @@ def arith_ty(a, b):
 
 
 class Frontend:
-    def __init__(self, src: str, tag: str):
+    def __init__(self, src: str, tag: str, choice_funcs=()):
+        self.choice_funcs = set(choice_funcs)
         self.tag = tag  # used to make recursive-function UF names distinct when needed
         text = preprocess(src)
         try:
@@ -570,6 +571,20 @@ class Frontend:
             raise Unsupported('indirect call')
         f = n.name.name
         args = n.args.exprs if n.args is not None else []
+        if f == 'assume' and args:
+            pre, c = self.lower_expr(args[0], env)
+            return pre + [Assume(coerce(c, BOOL))], Const(0, INT)
+        if f in self.choice_funcs:
+            pre = []
+            vals = []
+            for a in args:
+                p0, v = self.lower_expr(a, env)
+                pre += p0
+                vals.append(v)
+            proto = self.protos.get(f)
+            rty = c_type(proto.type.type) if proto is not None else INT
+            t = self.declare(self.fresh('ch_' + f), rty, env)
+            return pre + [Choose(t, f, vals, rty)], Var(t, rty)
         if f in IGNORED_CALLS:
             pre = []
             for a in args:
@@ -871,14 +886,15 @@ def _ret_in_loop(ss):
     return False
 
 
-def load_program(path_or_src, entry, is_src=False, tag='', with_rec=True) -> Program:
+def load_program(path_or_src, entry, is_src=False, tag='', with_rec=True, choice_funcs=()) -> Program:
     """Lower `entry`.  Recursive functions f reached from it appear as calls to the uninterpreted
     function rec_f; their own (lowered) bodies are returned in prog.rec_funcs[f] so they can be
     executed concretely and related by a separate mutual-summary obligation."""
     src = path_or_src if is_src else open(path_or_src).read()
-    fe = Frontend(src, tag)
+    fe = Frontend(src, tag, choice_funcs)
     prog = fe.lower_entry(entry, global_inputs=True)
     prog.recursive = sorted(fe.recursive_used)
+    prog.frontend = fe
     prog.src = src
     prog.rec_funcs = {}
     if with_rec:

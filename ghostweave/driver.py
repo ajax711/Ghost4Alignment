@@ -10,7 +10,7 @@ from .interp import Interp, Diverge, Undefined, run_func, rec_impls
 from .weave import (Weaver, SeqPlan, LoopPlan, IfPlan, top_items, label_loops, mark_ghost, has_loop,
                     monotone_matchings, loop_plan_space, if_conditions)
 from .invariants import (run_woven, mine, score_candidates, houdini, relabel, all_loops, guard_vars_of,
-                         mine_conditional, antecedents_for)
+                         mine_conditional, antecedents_for, is_cheap)
 from . import dafny as D
 
 
@@ -246,6 +246,26 @@ def verify(prob: Problem, n_inputs=40, top_k=5, time_budget=600, log=None, keep_
             sc += score_candidates(cs, assigned_vars(lp.body))
             cands[lp.label] = cs
             cands.setdefault('__cond__', {})[lp.label] = mine_conditional(smp, types, antecedents_for(lp, woven['body']), gv)
+        # penalty: real iterations executed after the ghost loop already finished (one-sided tail)
+        idle = 0.0
+        ev = Interp()
+        for lp in all_loops(woven['body']):
+            gg = getattr(lp, 'ghost_guard', None)
+            smp = samples.get(lp.label, [])
+            if gg is None or not smp:
+                continue
+            n_real = n_idle = 0
+            for st in smp:
+                try:
+                    if ev.ev(lp.c, st):
+                        n_real += 1
+                        if not ev.ev(gg, st):
+                            n_idle += 1
+                except Exception:
+                    pass
+            if n_real:
+                idle += n_idle / n_real
+        sc = sc - 4 * idle
         scored.append((-sc, idx, plan, woven, cands, ok))
     info['plans_viable'] = len(scored)
     scored.sort(key=lambda x: (x[0], x[1]))
@@ -257,11 +277,16 @@ def verify(prob: Problem, n_inputs=40, top_k=5, time_budget=600, log=None, keep_
             break
         hl = []
         cond = cands.pop('__cond__', {})
-        res, text, rounds = houdini(woven, prob.externs, cands, log=hl)
-        if not res.ok and any(cond.values()) and time.time() - t0 < time_budget:
-            # stage 2: add disjunctive (implication) candidates
-            c2 = {k: v + cond.get(k, []) for k, v in cands.items()}
-            res, text, r2 = houdini(woven, prob.externs, c2, log=hl)
+        dl = t0 + time_budget
+        # stage 1: cheap equalities;  stage 2: + inequalities / products;  stage 3: + implications
+        c1 = {k: [e for e in v if is_cheap(e)] for k, v in cands.items()}
+        res, text, rounds = houdini(woven, prob.externs, c1, log=hl, deadline=dl)
+        if not res.ok and time.time() < dl and any(len(c1[k]) < len(cands[k]) for k in cands):
+            res, text, r2 = houdini(woven, prob.externs, cands, log=hl, deadline=dl)
+            rounds += r2
+        if not res.ok and any(cond.values()) and time.time() < dl:
+            c3 = {k: v + cond.get(k, []) for k, v in cands.items()}
+            res, text, r2 = houdini(woven, prob.externs, c3, log=hl, deadline=dl)
             rounds += r2
         info['tried'].append({'plan': plan.describe(), 'score': -negsc, 'rounds': rounds, 'ok': res.ok,
                               'errors': [m for _, m in res.errors][:3], 'timeout': res.timeout})

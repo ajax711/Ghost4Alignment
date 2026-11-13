@@ -2,7 +2,7 @@
 
 usage: python3 bench/run_eqbench.py <EqBench/benchmarks dir> <out.jsonl> [--jobs 4] [--filter substr]
 """
-import argparse, json, os, sys, time, traceback, multiprocessing as mp
+import argparse, json, os, re, sys, time, traceback, multiprocessing as mp
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 
@@ -26,20 +26,28 @@ def work(args):
         fs = os.listdir(d)
         o = [f for f in fs if f.startswith('old') and f.endswith('.c')][0]
         n = [f for f in fs if f.startswith('new') and f.endswith('.c')][0]
-        # CLEVER pairs are client-specific: equivalence is claimed for the client `main`
-        if str(desc.get('program name', '')).endswith('.main') and 'main(' in open(os.path.join(d, o)).read():
-            fn = 'main'
+        # client-specific pairs (CLEVER, REVE/triangular): "program name" is <prog>.<client>, and the
+        # equivalence is claimed for the client, which calls the changed library function
+        pn = str(desc.get('program name', ''))
+        if '.' in pn:
+            client = pn.split('.')[-1]
+            if all(re.search(r'\b' + client + r'\s*\(', open(os.path.join(d, x)).read()) for x in (o, n)):
+                fn = client
         rec['entry'] = fn
         p1 = load_program(os.path.join(d, o), fn)
         p2 = load_program(os.path.join(d, n), fn)
         rec['recursive'] = sorted(set(p1.recursive) | set(p2.recursive))
         w = differential_test(p1, p2)
         rec['witness'] = None if w is None else {k: repr(v) for k, v in w.items()}
-        shared, rdet = prove_recursive(p1, p2, time_budget=budget / 2)
+        shared, rdet = prove_recursive(p1, p2, time_budget=budget / 3)
         rec['rec_shared'] = sorted(shared)
         rec['rec_details'] = rdet
         prob = Problem(p1, p2, shared=shared)
-        verdict, info = verify(prob, time_budget=budget)
+        if w is not None:
+            # already refuted: only a short soundness sanity check (the proof must fail)
+            verdict, info = verify(prob, time_budget=min(60, budget), top_k=1)
+        else:
+            verdict, info = verify(prob, time_budget=budget)
         rec['verdict'] = verdict
         rec['plan'] = info.get('plan')
         rec['plans_total'] = info.get('plans_total')

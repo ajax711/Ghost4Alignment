@@ -238,13 +238,14 @@ class Weaver:
         if cnt is not None:
             body = body + [Assign(cnt, Bin('+', Var(cnt, INT), Const(1, INT), INT), ghost=True)]
         wl = While(L.c, body, L.lid, [], None, False, label=L.lid)
+        wl.ghost_guard = mk_and(g, M.c) if g is not None else M.c   # for alignment scoring
         self.loop_meta[L.lid] = {'real': L.lid, 'ghost': M.lid, 'plan': p, 'cnt': cnt}
         out.append(wl)
         fin = mk_and(g, M.c) if g is not None else M.c
         if p.exit == 'assert':
             out.append(Assert(mk_not(fin), tag='ghost-exit:' + M.lid, ghost=True))
         else:
-            rest = mark_ghost(copy.deepcopy(M))
+            rest = mark_ghost([copy.deepcopy(M)])[0]
             rest.c = fin
             rest.lid = M.lid + 'r'
             rest.label = rest.lid

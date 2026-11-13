@@ -106,6 +106,7 @@ class Raw(Expr):
     quantifiers).  The interpreter treats it as true."""
     text: str
     ty: Any = BOOL
+    py: Any = None    # optional python predicate env -> bool used by the interpreter
 
 
 # ---------------------------------------------------------------- statements
@@ -156,6 +157,19 @@ class Assert(Stmt):
 @dataclass
 class Assume(Stmt):
     e: Expr
+    ghost: bool = False
+
+
+@dataclass
+class Choose(Stmt):
+    """Nondeterministic choice  name := fn(args)  (an Elaenia-style choice function).
+    On the forall side it is a real havoc constrained by the function's aspec; on the exists side
+    the weaver replaces it by a ghost assignment of a witness term."""
+    name: str
+    fn: str
+    args: List[Expr]
+    ty: Any
+    site: str = ''
     ghost: bool = False
 
 
@@ -266,6 +280,8 @@ def rename_stmts(ss, f, ghost=None):
             out.append(Assume(rename_expr(s.e, f), g))
         elif isinstance(s, Probe):
             out.append(Probe(s.label, g))
+        elif isinstance(s, Choose):
+            out.append(Choose(f(s.name), s.fn, [rename_expr(a, f) for a in s.args], s.ty, s.site, g))
         else:
             raise TypeError(s)
     return out
@@ -275,7 +291,7 @@ def assigned_vars(ss, acc=None):
     if acc is None:
         acc = set()
     for s in ss:
-        if isinstance(s, (Assign, Havoc)):
+        if isinstance(s, (Assign, Havoc, Choose)):
             acc.add(s.name)
         elif isinstance(s, If):
             assigned_vars(s.th, acc); assigned_vars(s.el, acc)
